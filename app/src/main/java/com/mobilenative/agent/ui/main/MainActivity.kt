@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Notifications
@@ -65,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.mobilenative.agent.accessibility.AccessibilityBridge
+import com.mobilenative.agent.logging.SupabaseLogger
 import com.mobilenative.agent.nlu.LLMGateway
 import com.mobilenative.agent.ui.overlay.FloatingOverlayService
 import com.mobilenative.agent.ui.theme.AccentGreen
@@ -86,6 +88,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var llmGateway: LLMGateway
 
+    @Inject
+    lateinit var supabaseLogger: SupabaseLogger
+
     private lateinit var prefs: SharedPreferences
 
     private val requestNotificationPermissionLauncher =
@@ -95,9 +100,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("agent_prefs", Context.MODE_PRIVATE)
 
-        // Load saved API keys into LLMGateway
+        // Load saved API & Supabase keys
         llmGateway.groqApiKey = prefs.getString("groq_key", "") ?: ""
         llmGateway.geminiApiKey = prefs.getString("gemini_key", "") ?: ""
+        supabaseLogger.supabaseUrl = prefs.getString("supabase_url", "https://offrflwttiagsbftpuzs.supabase.co") ?: "https://offrflwttiagsbftpuzs.supabase.co"
+        supabaseLogger.supabaseAnonKey = prefs.getString("supabase_key", "") ?: ""
 
         setContent {
             MobileNativeAgentTheme {
@@ -105,12 +112,18 @@ class MainActivity : ComponentActivity() {
                     accessibilityBridge = accessibilityBridge,
                     initialGroqKey = llmGateway.groqApiKey,
                     initialGeminiKey = llmGateway.geminiApiKey,
-                    onSaveKeys = { groq, gemini ->
+                    initialSupabaseUrl = supabaseLogger.supabaseUrl,
+                    initialSupabaseKey = supabaseLogger.supabaseAnonKey,
+                    onSaveKeys = { groq, gemini, supUrl, supKey ->
                         llmGateway.groqApiKey = groq
                         llmGateway.geminiApiKey = gemini
+                        supabaseLogger.supabaseUrl = supUrl
+                        supabaseLogger.supabaseAnonKey = supKey
                         prefs.edit()
                             .putString("groq_key", groq)
                             .putString("gemini_key", gemini)
+                            .putString("supabase_url", supUrl)
+                            .putString("supabase_key", supKey)
                             .apply()
                     },
                     onOpenOverlaySettings = { openOverlaySettings() },
@@ -164,7 +177,9 @@ fun MainDashboardScreen(
     accessibilityBridge: AccessibilityBridge,
     initialGroqKey: String,
     initialGeminiKey: String,
-    onSaveKeys: (String, String) -> Unit,
+    initialSupabaseUrl: String,
+    initialSupabaseKey: String,
+    onSaveKeys: (String, String, String, String) -> Unit,
     onOpenOverlaySettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
@@ -178,6 +193,8 @@ fun MainDashboardScreen(
 
     var groqKey by remember { mutableStateOf(initialGroqKey) }
     var geminiKey by remember { mutableStateOf(initialGeminiKey) }
+    var supabaseUrl by remember { mutableStateOf(initialSupabaseUrl) }
+    var supabaseKey by remember { mutableStateOf(initialSupabaseKey) }
     var keysSavedMessage by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -214,7 +231,7 @@ fun MainDashboardScreen(
             )
 
             Text(
-                text = "Level 2: WhatsApp Reader + 3-Layer Brain",
+                text = "Level 2: WhatsApp Reader + Supabase Tracker",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
@@ -240,9 +257,9 @@ fun MainDashboardScreen(
                 onGrantClick = onOpenAccessibilitySettings
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // 2. LLM Configuration Card
+            // 2. LLM & Supabase Configuration Card
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -253,27 +270,19 @@ fun MainDashboardScreen(
                         Icon(Icons.Default.Key, contentDescription = null, tint = PrimaryBlue, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "3-Layer Brain Configuration",
+                            text = "Brain & Supabase Configuration",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Groq (Layer 1 - Ultra Fast) ➔ Gemini (Layer 2) ➔ Local Fallback (Layer 3)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        fontSize = 11.sp
-                    )
-
                     Spacer(modifier = Modifier.height(12.dp))
 
                     OutlinedTextField(
                         value = groqKey,
                         onValueChange = { groqKey = it },
-                        label = { Text("Groq API Key (Optional)") },
+                        label = { Text("Groq API Key (Fast LPU)") },
                         placeholder = { Text("gsk_...") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -290,7 +299,7 @@ fun MainDashboardScreen(
                     OutlinedTextField(
                         value = geminiKey,
                         onValueChange = { geminiKey = it },
-                        label = { Text("Gemini API Key (Optional)") },
+                        label = { Text("Gemini API Key (Fallback)") },
                         placeholder = { Text("AIzaSy...") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -302,17 +311,64 @@ fun MainDashboardScreen(
                         )
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CloudUpload, contentDescription = null, tint = AccentGreen, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Supabase Live Tracker (Optional)",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = supabaseUrl,
+                        onValueChange = { supabaseUrl = it },
+                        label = { Text("Supabase Project URL") },
+                        placeholder = { Text("https://xyz.supabase.co") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.4f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = supabaseKey,
+                        onValueChange = { supabaseKey = it },
+                        label = { Text("Supabase Anon Key") },
+                        placeholder = { Text("eyJhbGciOi...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.4f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
 
                     Button(
                         onClick = {
-                            onSaveKeys(groqKey.trim(), geminiKey.trim())
+                            onSaveKeys(groqKey.trim(), geminiKey.trim(), supabaseUrl.trim(), supabaseKey.trim())
                             keysSavedMessage = true
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (keysSavedMessage) "Keys Saved ✓" else "Save Brain Keys")
+                        Text(if (keysSavedMessage) "Configuration Saved ✓" else "Save Config")
                     }
                 }
             }

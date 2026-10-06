@@ -3,28 +3,33 @@ package com.mobilenative.agent.ui.overlay
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.WindowManager
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.mobilenative.agent.R
 import com.mobilenative.agent.accessibility.AccessibilityBridge
-import com.mobilenative.agent.accessibility.ViewTreeExtractor
+import com.mobilenative.agent.drivers.WhatsAppDriver
+import com.mobilenative.agent.nlu.LLMGateway
+import com.mobilenative.agent.nlu.models.TaskPlan
 import com.mobilenative.agent.ui.theme.MobileNativeAgentTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -35,13 +40,17 @@ class FloatingOverlayService : LifecycleService() {
     lateinit var accessibilityBridge: AccessibilityBridge
 
     @Inject
-    lateinit var viewTreeExtractor: ViewTreeExtractor
+    lateinit var whatsAppDriver: WhatsAppDriver
+
+    @Inject
+    lateinit var llmGateway: LLMGateway
 
     private lateinit var windowManager: WindowManager
     private lateinit var overlayParams: WindowManager.LayoutParams
     private var composeView: ComposeView? = null
 
     private var isProcessingState by mutableStateOf(false)
+    private var activeTaskPlan by mutableStateOf<TaskPlan?>(null)
 
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "agent_overlay_channel"
@@ -114,18 +123,37 @@ class FloatingOverlayService : LifecycleService() {
                 MobileNativeAgentTheme {
                     val activePackage by accessibilityBridge.activePackageName.collectAsState()
 
-                    FloatingPillView(
-                        activePackage = activePackage,
-                        isProcessing = isProcessingState,
-                        onPillClicked = {
-                            handlePillTrigger()
-                        },
-                        onDragDelta = { dx, dy ->
-                            overlayParams.x += dx.toInt()
-                            overlayParams.y += dy.toInt()
-                            windowManager.updateViewLayout(this@apply, overlayParams)
+                    Box(contentAlignment = Alignment.Center) {
+                        // 1. Floating Pill View
+                        FloatingPillView(
+                            activePackage = activePackage,
+                            isProcessing = isProcessingState,
+                            onPillClicked = {
+                                handlePillTrigger()
+                            },
+                            onDragDelta = { dx, dy ->
+                                overlayParams.x += dx.toInt()
+                                overlayParams.y += dy.toInt()
+                                windowManager.updateViewLayout(this@apply, overlayParams)
+                            }
+                        )
+
+                        // 2. Confirmation Modal Overlay
+                        activeTaskPlan?.let { plan ->
+                            ConfirmationModal(
+                                plan = plan,
+                                onApprove = {
+                                    Timber.i("User approved task plan from %s: %s", plan.taskMetadata?.taskAssigner, plan.intentType)
+                                    activeTaskPlan = null
+                                    // Proceeds to Level 3 / Level 4 execution harness
+                                },
+                                onReject = {
+                                    Timber.i("User rejected task plan")
+                                    activeTaskPlan = null
+                                }
+                            )
                         }
-                    )
+                    }
                 }
             }
         }
@@ -137,19 +165,38 @@ class FloatingOverlayService : LifecycleService() {
         Timber.d("Floating Pill Clicked by User")
         val service = accessibilityBridge.activeService
         if (service == null) {
-            Timber.w("Accessibility Service is not connected. User must enable it in Settings.")
+            Timber.w("Accessibility Service is not connected.")
             return
         }
 
-        val rootNode = service.rootInActiveWindow
-        val visibleNodes = viewTreeExtractor.extractNodes(rootNode)
-        Timber.i("Scraped %d nodes from active window (%s)", visibleNodes.size, accessibilityBridge.activePackageName.value)
-
-        // Flash processing indicator
+        val activePkg = accessibilityBridge.activePackageName.value
         isProcessingState = true
-        composeView?.postDelayed({
-            isProcessingState = false
-        }, 1200)
+
+        lifecycleScope.launch {
+            try {
+                if (whatsAppDriver.isWhatsAppForeground(activePkg)) {
+                    // Scrape recent WhatsApp chat history and contact header
+                    val (chatHeader, messages) = whatsAppDriver.scrapeChatHistory(service)
+                    Timber.i("Captured %d WhatsApp messages from chat '%s' for NLU", messages.size, chatHeader)
+
+                    if (messages.isNotEmpty()) {
+                        // Pass through 3-Layer LLM Gateway (Groq -> Gemini -> Local)
+                        val taskPlan = llmGateway.parseConversation(messages, chatHeader)
+                        Timber.i("Generated Task Plan from %s: %s", taskPlan.taskMetadata?.taskAssigner, taskPlan.humanReadableSummary)
+
+                        if (taskPlan.hasActionableTask) {
+                            activeTaskPlan = taskPlan
+                        }
+                    }
+                } else {
+                    Timber.i("Pill tapped outside WhatsApp (%s)", activePkg)
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Error processing screen trigger")
+            } finally {
+                isProcessingState = false
+            }
+        }
     }
 
     override fun onDestroy() {

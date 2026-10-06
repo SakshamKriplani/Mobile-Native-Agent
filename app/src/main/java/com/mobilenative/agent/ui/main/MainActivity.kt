@@ -3,6 +3,7 @@ package com.mobilenative.agent.ui.main
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -29,12 +30,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -42,8 +43,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.mobilenative.agent.accessibility.AccessibilityBridge
+import com.mobilenative.agent.nlu.LLMGateway
 import com.mobilenative.agent.ui.overlay.FloatingOverlayService
 import com.mobilenative.agent.ui.theme.AccentGreen
 import com.mobilenative.agent.ui.theme.CardBackground
@@ -80,18 +83,36 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var accessibilityBridge: AccessibilityBridge
 
+    @Inject
+    lateinit var llmGateway: LLMGateway
+
+    private lateinit var prefs: SharedPreferences
+
     private val requestNotificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-            // Update state
-        }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        prefs = getSharedPreferences("agent_prefs", Context.MODE_PRIVATE)
+
+        // Load saved API keys into LLMGateway
+        llmGateway.groqApiKey = prefs.getString("groq_key", "") ?: ""
+        llmGateway.geminiApiKey = prefs.getString("gemini_key", "") ?: ""
 
         setContent {
             MobileNativeAgentTheme {
                 MainDashboardScreen(
                     accessibilityBridge = accessibilityBridge,
+                    initialGroqKey = llmGateway.groqApiKey,
+                    initialGeminiKey = llmGateway.geminiApiKey,
+                    onSaveKeys = { groq, gemini ->
+                        llmGateway.groqApiKey = groq
+                        llmGateway.geminiApiKey = gemini
+                        prefs.edit()
+                            .putString("groq_key", groq)
+                            .putString("gemini_key", gemini)
+                            .apply()
+                    },
                     onOpenOverlaySettings = { openOverlaySettings() },
                     onOpenAccessibilitySettings = { openAccessibilitySettings() },
                     onRequestNotificationPermission = { requestNotificationPermission() },
@@ -141,18 +162,24 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainDashboardScreen(
     accessibilityBridge: AccessibilityBridge,
+    initialGroqKey: String,
+    initialGeminiKey: String,
+    onSaveKeys: (String, String) -> Unit,
     onOpenOverlaySettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
     onStartOverlay: () -> Unit,
     onStopOverlay: () -> Unit
 ) {
-    val context = LocalContext.ContextEffect()
+    val context = LocalContext.current
     var hasOverlayPermission by remember { mutableStateOf(false) }
     var hasNotificationPermission by remember { mutableStateOf(false) }
     val isAccessibilityConnected by accessibilityBridge.isServiceConnected.collectAsState()
 
-    // Refresh permission statuses on resume/mount
+    var groqKey by remember { mutableStateOf(initialGroqKey) }
+    var geminiKey by remember { mutableStateOf(initialGeminiKey) }
+    var keysSavedMessage by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(context)
@@ -187,50 +214,114 @@ fun MainDashboardScreen(
             )
 
             Text(
-                text = "Level 1: System Baseline & Floating Pill",
+                text = "Level 2: WhatsApp Reader + 3-Layer Brain",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            // Permission Status Cards
+            // 1. Permission Cards
             PermissionStatusCard(
                 title = "1. Display Over Other Apps",
-                description = "Required to show the floating agent pill and confirmation card over WhatsApp and shopping apps.",
+                description = "Required to show the floating agent pill and confirmation card over WhatsApp.",
                 isGranted = hasOverlayPermission,
                 icon = Icons.Default.Layers,
                 onGrantClick = onOpenOverlaySettings
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             PermissionStatusCard(
                 title = "2. Accessibility Service",
-                description = "Required for reading chat messages and automating on-screen actions with user confirmation.",
+                description = "Required to read chat bubbles and perform on-screen actions.",
                 isGranted = isAccessibilityConnected,
                 icon = Icons.Default.Security,
                 onGrantClick = onOpenAccessibilitySettings
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                PermissionStatusCard(
-                    title = "3. Foreground Notification",
-                    description = "Ensures Samsung OS does not sleep or kill the agent while running in the background.",
-                    isGranted = hasNotificationPermission,
-                    icon = Icons.Default.Notifications,
-                    onGrantClick = onRequestNotificationPermission
-                )
-                Spacer(modifier = Modifier.height(14.dp))
+            // 2. LLM Configuration Card
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = CardBackground),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Key, contentDescription = null, tint = PrimaryBlue, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "3-Layer Brain Configuration",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Groq (Layer 1 - Ultra Fast) ➔ Gemini (Layer 2) ➔ Local Fallback (Layer 3)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = groqKey,
+                        onValueChange = { groqKey = it },
+                        label = { Text("Groq API Key (Optional)") },
+                        placeholder = { Text("gsk_...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryBlue,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.4f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = geminiKey,
+                        onValueChange = { geminiKey = it },
+                        label = { Text("Gemini API Key (Optional)") },
+                        placeholder = { Text("AIzaSy...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryBlue,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.4f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Button(
+                        onClick = {
+                            onSaveKeys(groqKey.trim(), geminiKey.trim())
+                            keysSavedMessage = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (keysSavedMessage) "Keys Saved ✓" else "Save Brain Keys")
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             val allReady = hasOverlayPermission && isAccessibilityConnected
 
-            // Start / Stop Service Control Card
+            // 3. Floating Pill Launcher Card
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -238,7 +329,7 @@ fun MainDashboardScreen(
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "Agent Overlay Controller",
+                        text = "Agent Controller",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
@@ -246,9 +337,9 @@ fun MainDashboardScreen(
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = if (allReady) {
-                            "All permissions granted! Launch the floating pill to start."
+                            "Ready! Tap 'Launch Pill', open any WhatsApp chat, and tap the pill to test."
                         } else {
-                            "Please grant the permissions above to enable the floating pill."
+                            "Grant permissions above to enable the floating pill."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
@@ -358,9 +449,4 @@ fun PermissionStatusCard(
             }
         }
     }
-}
-
-@Composable
-private fun LocalContext.ContextEffect(): Context {
-    return LocalContext.current
 }

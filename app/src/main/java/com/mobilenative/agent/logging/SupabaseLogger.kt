@@ -5,6 +5,7 @@ import com.mobilenative.agent.nlu.models.TaskPlan
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -52,7 +53,16 @@ class SupabaseLogger @Inject constructor() {
                 put("intent_type", plan.intentType)
                 put("summary", plan.humanReadableSummary)
                 put("status", status)
-                put("entities", json.encodeToJsonElement(plan.entities))
+
+                // If task exists, log action steps; otherwise keep it null
+                if (plan.hasActionableTask && plan.executionSteps.isNotEmpty()) {
+                    put("action_steps", json.encodeToJsonElement(plan.executionSteps))
+                    put("entities", json.encodeToJsonElement(plan.entities))
+                } else {
+                    put("action_steps", JsonNull)
+                    put("entities", JsonNull)
+                }
+
                 put("raw_messages", buildJsonArray {
                     rawMessages.forEach { msg ->
                         addJsonObject {
@@ -76,7 +86,7 @@ class SupabaseLogger @Inject constructor() {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    Timber.i("Successfully logged task to Supabase: %s", plan.intentType)
+                    Timber.i("Successfully logged task to Supabase: %s (action_steps=%s)", plan.intentType, plan.hasActionableTask)
                 } else {
                     val err = response.body?.string() ?: ""
                     Timber.w("Failed to log task to Supabase (HTTP %d): %s", response.code, err)

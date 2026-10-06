@@ -227,6 +227,10 @@ class FloatingOverlayService : LifecycleService() {
                         if (taskPlan.hasActionableTask) {
                             activeTaskPlan = taskPlan
                             supabaseLogger.logExtractedTask(taskPlan, messages, status = "EXTRACTED")
+                        } else {
+                            // Casual chat with no task -> Log to Supabase with action_steps=null
+                            Timber.i("No actionable task detected. Logging to Supabase with action_steps=null")
+                            supabaseLogger.logExtractedTask(taskPlan, messages, status = "NO_TASK_DETECTED")
                         }
                     }
                 } else {
